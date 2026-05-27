@@ -21,6 +21,7 @@ pub enum DataKey {
     NextId,
     Admin,
     AccessControl,
+    InvoiceCount,
 }
 
 // ── Contract ─────────────────────────────────────────────────────────────────
@@ -61,6 +62,11 @@ impl InvoiceNftContract {
         require_non_empty_bytes(&debtor_hash)?;
         require_non_empty_string(&ipfs_cid)?;
 
+        // Ensure amount doesn't exceed safe bounds
+        if amount > i128::MAX / 2 {
+            return Err(KoraError::ArithmeticOverflow);
+        }
+
         let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(1);
 
         let invoice = Invoice {
@@ -80,7 +86,11 @@ impl InvoiceNftContract {
         };
 
         env.storage().persistent().set(&DataKey::Invoice(id), &invoice);
-        env.storage().instance().set(&DataKey::NextId, &(id + 1));
+        env.storage().instance().set(&DataKey::NextId, &(id.checked_add(1).ok_or(KoraError::ArithmeticOverflow)?));
+
+        // Increment invoice count for metrics
+        let count: u64 = env.storage().instance().get(&DataKey::InvoiceCount).unwrap_or(0);
+        env.storage().instance().set(&DataKey::InvoiceCount, &(count.checked_add(1).ok_or(KoraError::ArithmeticOverflow)?));
 
         events::invoice_created(&env, id, &sme, amount);
         Ok(id)
@@ -124,6 +134,7 @@ impl InvoiceNftContract {
         invoice.status = InvoiceStatus::Repaid;
         invoice.repaid_at = Some(env.ledger().timestamp());
         env.storage().persistent().set(&DataKey::Invoice(invoice_id), &invoice);
+        events::invoice_repaid(&env, invoice_id, &invoice.sme, invoice.amount);
         Ok(())
     }
 
@@ -152,6 +163,10 @@ impl InvoiceNftContract {
 
     pub fn next_id(env: Env) -> u64 {
         env.storage().instance().get(&DataKey::NextId).unwrap_or(1)
+    }
+
+    pub fn invoice_count(env: Env) -> u64 {
+        env.storage().instance().get(&DataKey::InvoiceCount).unwrap_or(0)
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -223,6 +238,7 @@ mod tests {
         let invoice = client.get_invoice(&1);
         assert_eq!(invoice.status, InvoiceStatus::Created);
         assert_eq!(invoice.risk_tier, RiskTier::AA);
+        assert_eq!(client.invoice_count(), 1);
     }
 
     #[test]
@@ -235,6 +251,51 @@ mod tests {
 
         let result = client.try_mint_invoice(
             &sme, &debtor_hash, &0i128,
+            &Symbol::new(&env, "USDC"), &due_date, &ipfs_cid, &10u32,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mint_invoice_past_due_date_fails() {
+        let (env, _admin, client) = setup();
+        let sme = Address::generate(&env);
+        let debtor_hash = Bytes::from_slice(&env, &[1u8; 32]);
+        let ipfs_cid = String::from_str(&env, "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        let due_date = env.ledger().timestamp() - 1; // past date
+
+        let result = client.try_mint_invoice(
+            &sme, &debtor_hash, &1_000_000_000i128,
+            &Symbol::new(&env, "USDC"), &due_date, &ipfs_cid, &10u32,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mint_invoice_invalid_risk_score_fails() {
+        let (env, _admin, client) = setup();
+        let sme = Address::generate(&env);
+        let debtor_hash = Bytes::from_slice(&env, &[1u8; 32]);
+        let ipfs_cid = String::from_str(&env, "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        let due_date = env.ledger().timestamp() + 86_400;
+
+        let result = client.try_mint_invoice(
+            &sme, &debtor_hash, &1_000_000_000i128,
+            &Symbol::new(&env, "USDC"), &due_date, &ipfs_cid, &101u32, // invalid score
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mint_invoice_empty_debtor_hash_fails() {
+        let (env, _admin, client) = setup();
+        let sme = Address::generate(&env);
+        let debtor_hash = Bytes::from_slice(&env, &[]);
+        let ipfs_cid = String::from_str(&env, "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        let due_date = env.ledger().timestamp() + 86_400;
+
+        let result = client.try_mint_invoice(
+            &sme, &debtor_hash, &1_000_000_000i128,
             &Symbol::new(&env, "USDC"), &due_date, &ipfs_cid, &10u32,
         );
         assert!(result.is_err());
@@ -263,5 +324,70 @@ mod tests {
 
         client.set_repaid(&pool, &id);
         assert_eq!(client.get_invoice(&id).status, InvoiceStatus::Repaid);
+    }
+
+    #[test]
+    fn test_invalid_status_transition_fails() {
+        let (env, _admin, client) = setup();
+        let sme = Address::generate(&env);
+        let debtor_hash = Bytes::from_slice(&env, &[1u8; 32]);
+        let ipfs_cid = String::from_str(&env, "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        let due_date = env.ledger().timestamp() + 86_400 * 30;
+
+        let id = client.mint_invoice(
+            &sme, &debtor_hash, &1_000_000_000i128,
+            &Symbol::new(&env, "USDC"), &due_date, &ipfs_cid, &10u32,
+        );
+
+        let pool = Address::generate(&env);
+        // Try to set funded without listing first
+        let result = client.try_set_funded(&pool, &id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_defaulted_requires_past_due_date() {
+        let (env, admin, client) = setup();
+        let sme = Address::generate(&env);
+        let debtor_hash = Bytes::from_slice(&env, &[1u8; 32]);
+        let ipfs_cid = String::from_str(&env, "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        let due_date = env.ledger().timestamp() + 86_400 * 30;
+
+        let id = client.mint_invoice(
+            &sme, &debtor_hash, &1_000_000_000i128,
+            &Symbol::new(&env, "USDC"), &due_date, &ipfs_cid, &10u32,
+        );
+
+        let marketplace = Address::generate(&env);
+        client.set_listed(&marketplace, &id);
+
+        let pool = Address::generate(&env);
+        client.set_funded(&pool, &id);
+
+        // Try to default before due date
+        let result = client.try_set_defaulted(&admin, &id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multiple_invoices_increment_id() {
+        let (env, _admin, client) = setup();
+        let sme = Address::generate(&env);
+        let debtor_hash = Bytes::from_slice(&env, &[1u8; 32]);
+        let ipfs_cid = String::from_str(&env, "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        let due_date = env.ledger().timestamp() + 86_400;
+
+        let id1 = client.mint_invoice(
+            &sme, &debtor_hash, &1_000_000_000i128,
+            &Symbol::new(&env, "USDC"), &due_date, &ipfs_cid, &10u32,
+        );
+        let id2 = client.mint_invoice(
+            &sme, &debtor_hash, &2_000_000_000i128,
+            &Symbol::new(&env, "USDC"), &due_date, &ipfs_cid, &20u32,
+        );
+
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+        assert_eq!(client.invoice_count(), 2);
     }
 }
