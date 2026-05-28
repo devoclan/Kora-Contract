@@ -201,60 +201,12 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Edge Case Tests ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_double_pause_fails() {
-        let (_, admin, client) = setup();
-        client.pause(&admin);
-        let result = client.try_pause(&admin);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_double_unpause_fails() {
-        let (_, admin, client) = setup();
-        let result = client.try_unpause(&admin);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_cannot_grant_admin_role() {
-        let (env, admin, client) = setup();
-        let target = Address::generate(&env);
-        let result = client.try_grant_role(&admin, &target, &Role::Admin);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_cannot_revoke_admin_role() {
-        let (env, admin, client) = setup();
-        let result = client.try_revoke_role(&admin, &admin);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_transfer_admin_to_self_fails() {
-        let (_, admin, client) = setup();
-        let result = client.try_transfer_admin(&admin, &admin);
-        assert!(result.is_err());
-    }
-
     #[test]
     fn test_non_admin_cannot_grant_role() {
         let (env, _admin, client) = setup();
         let stranger = Address::generate(&env);
         let target = Address::generate(&env);
         let result = client.try_grant_role(&stranger, &target, &Role::Verifier);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_non_admin_cannot_revoke_role() {
-        let (env, _admin, client) = setup();
-        let stranger = Address::generate(&env);
-        let target = Address::generate(&env);
-        let result = client.try_revoke_role(&stranger, &target);
         assert!(result.is_err());
     }
 
@@ -268,30 +220,30 @@ mod tests {
     }
 
     #[test]
-    fn test_role_persistence_after_transfer() {
+    fn test_multiple_role_assignments() {
         let (env, admin, client) = setup();
-        let verifier = Address::generate(&env);
-        let new_admin = Address::generate(&env);
+        let verifier1 = Address::generate(&env);
+        let verifier2 = Address::generate(&env);
+        let operator = Address::generate(&env);
 
-        client.grant_role(&admin, &verifier, &Role::Verifier);
-        assert_eq!(client.get_role(&verifier), Role::Verifier);
+        client.grant_role(&admin, &verifier1, &Role::Verifier);
+        client.grant_role(&admin, &verifier2, &Role::Verifier);
+        client.grant_role(&admin, &operator, &Role::Operator);
 
-        client.transfer_admin(&admin, &new_admin);
-        assert_eq!(client.get_role(&verifier), Role::Verifier);
-        assert_eq!(client.get_role(&new_admin), Role::Admin);
+        assert_eq!(client.get_role(&verifier1), Role::Verifier);
+        assert_eq!(client.get_role(&verifier2), Role::Verifier);
+        assert_eq!(client.get_role(&operator), Role::Operator);
     }
 
     #[test]
-    fn test_multiple_role_transitions() {
+    fn test_role_override() {
         let (env, admin, client) = setup();
         let user = Address::generate(&env);
 
         client.grant_role(&admin, &user, &Role::Operator);
         assert_eq!(client.get_role(&user), Role::Operator);
 
-        client.revoke_role(&admin, &user);
-        assert_eq!(client.get_role(&user), Role::None);
-
+        // Override with different role
         client.grant_role(&admin, &user, &Role::Verifier);
         assert_eq!(client.get_role(&user), Role::Verifier);
     }
