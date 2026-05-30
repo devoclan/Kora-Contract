@@ -50,6 +50,37 @@ use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Map
 
 const MAX_AMOUNT: i128 = i128::MAX / 2;
 
+// ── Local Events (Issue #88: Standardized Event Emissions) ──────────────────
+
+// EVENT SCHEMA: (topic_symbol, actor, account, amount, ledger_sequence)
+// All events follow standardized format: operation topic + actor, account, amount, ledger
+
+fn emit_pool_created(env: &Env, invoice_id: u64, actor: &Address) {
+    env.events().publish(
+        (soroban_sdk::symbol_short!("pool_open"),),
+        (invoice_id, actor.clone(), env.ledger().sequence()),
+    );
+}
+
+fn emit_position_recorded(
+    env: &Env,
+    invoice_id: u64,
+    actor: &Address,
+    investor: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (soroban_sdk::symbol_short!("pos_rec"),),
+        (
+            invoice_id,
+            actor.clone(),
+            investor.clone(),
+            amount,
+            env.ledger().sequence(),
+        ),
+    );
+}
+
 // ── Storage Keys ─────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -155,6 +186,9 @@ impl FinancingPoolContract {
             .persistent()
             .set(&DataKey::Pool(invoice_id), &pool);
 
+        // EVENT: Pool created (standardized schema) - Issue #88
+        emit_pool_created(&env, invoice_id, &marketplace);
+
         // Transition NFT status to Funded
         nft_client.set_funded(&env.current_contract_address(), &invoice_id);
 
@@ -209,6 +243,9 @@ impl FinancingPoolContract {
         env.storage()
             .persistent()
             .set(&DataKey::Positions(invoice_id), &positions);
+
+        // EVENT: Position recorded (standardized schema) - Issue #88
+        emit_position_recorded(&env, invoice_id, &caller, &investor, contributed);
 
         Ok(())
     }
