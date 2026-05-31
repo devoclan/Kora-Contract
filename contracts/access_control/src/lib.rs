@@ -589,7 +589,6 @@ mod tests {
         assert_eq!(client.get_role(&unknown), Role::None);
     }
 }
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests_extended {
