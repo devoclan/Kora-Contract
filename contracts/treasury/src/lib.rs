@@ -175,7 +175,6 @@ impl TreasuryContract {
         Self::require_admin(&env, &admin)?;
         Self::require_whitelisted_token(&env, &token)?;
 
-        // Acquire reentrancy guard — released automatically when _guard drops
         let _guard = ReentrancyGuard::new(&env)?;
 
         let token_client = token::Client::new(&env, &token);
