@@ -1,5 +1,7 @@
 #![no_std]
 
+use kora_shared::{errors::KoraError, events, reentrancy::ReentrancyGuard};
+
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
 use kora_shared::{errors::KoraError, events};
 
@@ -763,6 +765,50 @@ mod tests {
     }
 
     // ── get_admin ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_pause_before_init_returns_not_initialized() {
+        let (env, client) = deploy_uninit();
+        let admin = Address::generate(&env);
+        let result = client.try_pause(&admin);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotInitialized);
+    }
+
+    #[test]
+    fn test_grant_role_before_init_returns_not_initialized() {
+        let (env, client) = deploy_uninit();
+        let admin = Address::generate(&env);
+        let target = Address::generate(&env);
+        let result = client.try_grant_role(&admin, &target, &Role::Verifier);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotInitialized);
+    }
+
+    #[test]
+    fn test_revoke_role_before_init_returns_not_initialized() {
+        let (env, client) = deploy_uninit();
+        let admin = Address::generate(&env);
+        let target = Address::generate(&env);
+        let result = client.try_revoke_role(&admin, &target);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotInitialized);
+    }
+
+    #[test]
+    fn test_transfer_admin_before_init_returns_not_initialized() {
+        let (env, client) = deploy_uninit();
+        let admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let result = client.try_transfer_admin(&admin, &new_admin);
+        assert_eq!(result.unwrap_err().unwrap(), KoraError::NotInitialized);
+    }
+
+    #[test]
+    fn test_get_role_falls_back_to_admin_when_role_key_missing() {
+        let (env, admin, client) = setup();
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Role(admin.clone()));
+        assert_eq!(client.get_role(&admin), Role::Admin);
+    }
 
     #[test]
     fn test_get_admin_before_init_returns_not_initialized() {
