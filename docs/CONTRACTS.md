@@ -176,12 +176,14 @@ Records an investor's position in the pool. Admin only (called internally).
 
 SME repays the invoice. If fully repaid, distributes yield to all investors and marks NFT as `Repaid`.
 
+**Late penalty model:** On the first repayment call where `ledger.timestamp > invoice.due_date`, a one-time flat penalty of `bps_of(face_value, late_penalty_bps)` is added to `total_owed`. Subsequent repayments (partial or full) are tracked against `total_owed` so the penalty is never double-counted. Uses the same bps conventions as marketplace `fee_bps`.
+
 | Param | Type | Description |
 |-------|------|-------------|
 | `payer` | `Address` | Must sign. |
 | `amount` | `i128` | Repayment amount in stroops. |
 
-Errors: `PoolNotFound`, `RepaymentAlreadyMade`
+Errors: `PoolNotFound`, `RepaymentAlreadyMade`, `ArithmeticOverflow`
 
 ---
 

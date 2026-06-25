@@ -98,6 +98,8 @@ impl FinancingPoolContract {
             repaid_amount: 0,
             is_closed: false,
             late_penalty_bps,
+            total_owed: invoice.amount,
+            penalty_applied: false,
         };
 
         env.storage().persistent().set(&DataKey::Pool(invoice_id), &pool);
@@ -169,6 +171,11 @@ impl FinancingPoolContract {
     }
 
     /// SME repays the invoice.
+    /// If the current ledger timestamp is past the invoice's due_date and no
+    /// penalty has been applied yet, a one-time late penalty of
+    /// `bps_of(face_value, late_penalty_bps)` is added to `total_owed`.
+    /// Partial repayments are tracked against `total_owed` so the penalty is
+    /// never double-counted.
     pub fn repay(
         env: Env,
         payer: Address,
@@ -201,13 +208,35 @@ impl FinancingPoolContract {
             return Err(KoraError::RepaymentAlreadyMade);
         }
 
+        // Apply late penalty once if repayment is past due_date
+        if !pool.penalty_applied && pool.late_penalty_bps > 0 {
+            let nft_contract: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::InvoiceNft)
+                .ok_or(KoraError::NotInitialized)?;
+            let nft_client =
+                kora_invoice_nft::InvoiceNftContractClient::new(&env, &nft_contract);
+            let invoice = nft_client.get_invoice(&invoice_id);
+
+            if env.ledger().timestamp() > invoice.due_date {
+                let penalty = bps_of(pool.face_value, pool.late_penalty_bps)?;
+                pool.total_owed = pool
+                    .total_owed
+                    .checked_add(penalty)
+                    .ok_or(KoraError::ArithmeticOverflow)?;
+                pool.penalty_applied = true;
+                events::late_penalty_applied(&env, invoice_id, penalty, pool.total_owed);
+            }
+        }
+
         // Effects before interactions (CEI pattern)
         pool.repaid_amount = pool
             .repaid_amount
             .checked_add(amount)
             .ok_or(KoraError::ArithmeticOverflow)?;
 
-        let should_close = pool.repaid_amount >= pool.face_value;
+        let should_close = pool.repaid_amount >= pool.total_owed;
         if should_close {
             pool.is_closed = true;
         }
@@ -220,18 +249,15 @@ impl FinancingPoolContract {
         // Standardized repayment event
         events::repayment_made(&env, invoice_id, &payer, amount);
 
-
         if should_close {
             Self::distribute_yield(
                 &env,
                 invoice_id,
                 &token,
                 pool.repaid_amount,
+                pool.face_value,
             )?;
 
-
-            // Mark NFT as repaid
-            // AUDIT FIX: Use ok_or() instead of unwrap() for safe error propagation
             let nft_contract: Address = env
                 .storage()
                 .instance()
